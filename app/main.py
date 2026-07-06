@@ -21,7 +21,7 @@ from app.models import (
 )
 from app.services.benchmark import build_benchmark
 from app.services.forensic import InvalidForensicImageError, compute_ela
-from app.services.llm_client import GeminiClient
+from app.services.llm_client import LLMClient
 from app.services.milestone_validator import MilestoneValidationError, MilestoneValidator
 from app.services.ocr_service import InvalidImageError, OcrService
 from app.services.validator import RABValidationError, RABValidator
@@ -35,7 +35,14 @@ PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
 async def lifespan(app: FastAPI):
     settings = get_settings()
 
-    llm_client = GeminiClient(api_key=settings.gemini_api_key, model=settings.gemini_model)
+    llm_client = LLMClient(
+        api_key=settings.llm_api_key,
+        model=settings.llm_model,
+        base_url=settings.llm_base_url,
+        timeout_seconds=settings.llm_timeout_seconds,
+        max_tokens=settings.llm_max_tokens,
+        supports_vision=settings.llm_supports_vision,
+    )
     benchmark = build_benchmark(settings)
     validator = RABValidator(llm_client=llm_client, benchmark=benchmark)
 
@@ -113,7 +120,7 @@ async def health(request: Request):
     ocr_service: OcrService = request.app.state.ocr_service
     return {
         "status": "ok",
-        "model": settings.gemini_model,
+        "model": settings.llm_model,
         "benchmark_enabled": settings.inaproc_enabled,
         "benchmark_source": "INAPROC" if settings.inaproc_enabled else None,
         "ocr_ready": ocr_service.ocr_ready,

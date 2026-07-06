@@ -11,7 +11,7 @@ from app.prompts.ocr_parse_prompt import (
     build_ocr_parse_prompt,
     build_ocr_vision_prompt,
 )
-from app.services.llm_client import GeminiClient, LLMClientError
+from app.services.llm_client import LLMClient, LLMClientError
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +29,7 @@ class InvalidImageError(Exception):
 
 
 class LLMOcrParseResult(BaseModel):
-    """Schema output Gemini saat merapikan teks OCR menjadi item terstruktur."""
+    """Schema output LLM saat merapikan teks OCR menjadi item terstruktur."""
 
     suggested_items: list[SuggestedItem] = Field(default_factory=list)
     detected_total: float | None = None
@@ -37,7 +37,7 @@ class LLMOcrParseResult(BaseModel):
 
 
 class LLMOcrVisionResult(LLMOcrParseResult):
-    """Schema output Gemini saat membaca gambar nota langsung (vision fallback)."""
+    """Schema output LLM saat membaca gambar nota langsung (vision fallback)."""
 
     raw_text: str = ""
 
@@ -57,9 +57,9 @@ def sniff_image_mime(image_bytes: bytes) -> str:
 
 
 class OcrService:
-    """OCR assist: PaddleOCR (utama) + Gemini vision fallback, best-effort."""
+    """OCR assist: PaddleOCR (utama) + LLM vision fallback, best-effort."""
 
-    def __init__(self, settings: Settings, llm_client: GeminiClient) -> None:
+    def __init__(self, settings: Settings, llm_client: LLMClient) -> None:
         self._settings = settings
         self._llm_client = llm_client
         self._engine = None

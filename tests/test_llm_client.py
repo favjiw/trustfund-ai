@@ -1,0 +1,94 @@
+import json
+
+import httpx
+import pytest
+
+from app.services.llm_client import LLMClient, LLMClientError, LLMValidationResult
+
+
+def _client(handler, **kwargs) -> LLMClient:
+    transport = httpx.MockTransport(handler)
+    http = httpx.Client(transport=transport, base_url="http://llm.test")
+    return LLMClient(
+        api_key="sk-test",
+        model="deepseek-v4-pro",
+        base_url="http://llm.test/v1",
+        client=http,
+        **kwargs,
+    )
+
+
+def _completion(content: str) -> dict:
+    return {"choices": [{"message": {"role": "assistant", "content": content}}]}
+
+
+def test_sends_openai_shape_and_parses_json():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["auth"] = request.headers.get("authorization")
+        captured["body"] = json.loads(request.content)
+        payload = {"overall_score": 90, "summary": "ok", "item_assessments": [], "flags": []}
+        return httpx.Response(200, json=_completion(json.dumps(payload)))
+
+    client = _client(handler)
+    result = client.assess_rab("sys", "prompt")
+
+    assert isinstance(result, LLMValidationResult)
+    assert result.overall_score == 90
+    assert captured["auth"] == "Bearer sk-test"
+    assert captured["body"]["model"] == "deepseek-v4-pro"
+    assert captured["body"]["response_format"] == {"type": "json_object"}
+    # schema instruction diselipkan ke system message
+    assert "JSON schema" in captured["body"]["messages"][0]["content"]
+
+
+def test_strips_markdown_code_fence():
+    fenced = "```json\n{\"overall_score\": 55, \"summary\": \"x\", \"item_assessments\": [], \"flags\": []}\n```"
+    client = _client(lambda r: httpx.Response(200, json=_completion(fenced)))
+
+    result = client.assess_rab("sys", "prompt")
+    assert result.overall_score == 55
+
+
+def test_http_error_raises_llm_client_error():
+    client = _client(lambda r: httpx.Response(429, json={"error": "rate limit"}))
+    with pytest.raises(LLMClientError):
+        client.assess_rab("sys", "prompt")
+
+
+def test_invalid_json_raises_llm_client_error():
+    client = _client(lambda r: httpx.Response(200, json=_completion("bukan json sama sekali")))
+    with pytest.raises(LLMClientError):
+        client.assess_rab("sys", "prompt")
+
+
+def test_vision_guard_when_model_text_only():
+    called = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal called
+        called = True
+        return httpx.Response(200, json=_completion("{}"))
+
+    client = _client(handler, supports_vision=False)
+    with pytest.raises(LLMClientError, match="tidak mendukung input gambar"):
+        client.generate_structured("sys", "prompt", LLMValidationResult, image=(b"\xff\xd8", "image/jpeg"))
+    assert called is False  # tidak ada panggilan API yang sia-sia
+
+
+def test_vision_sends_image_url_when_supported():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        payload = {"overall_score": 70, "summary": "ok", "item_assessments": [], "flags": []}
+        return httpx.Response(200, json=_completion(json.dumps(payload)))
+
+    client = _client(handler, supports_vision=True)
+    client.generate_structured("sys", "prompt", LLMValidationResult, image=(b"\xff\xd8\xff", "image/jpeg"))
+
+    content = captured["body"]["messages"][1]["content"]
+    assert isinstance(content, list)
+    assert any(part.get("type") == "image_url" for part in content)
+    assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")

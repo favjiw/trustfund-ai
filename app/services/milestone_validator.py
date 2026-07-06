@@ -14,7 +14,7 @@ from app.models import (
     ValidateMilestoneResponse,
 )
 from app.prompts.milestone_prompt import MILESTONE_SYSTEM_INSTRUCTION, build_milestone_prompt
-from app.services.llm_client import GeminiClient, LLMClientError
+from app.services.llm_client import LLMClient, LLMClientError
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +42,7 @@ class MilestoneValidator:
     dan sinyal forensik. LLM memberi penilaian semantik; KODE yang menggabung
     aturan toleransi + forensik menjadi verdict final."""
 
-    def __init__(self, llm_client: GeminiClient, settings: Settings) -> None:
+    def __init__(self, llm_client: LLMClient, settings: Settings) -> None:
         self._llm_client = llm_client
         self._settings = settings
 

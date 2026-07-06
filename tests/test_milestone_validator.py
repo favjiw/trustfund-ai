@@ -36,7 +36,7 @@ class FakeLLMClient:
 
 
 def make_settings(**overrides) -> Settings:
-    values = {"gemini_api_key": "dummy", "internal_token": "x"}
+    values = {"llm_api_key": "dummy", "internal_token": "x"}
     values.update(overrides)
     return Settings(_env_file=None, **values)
 

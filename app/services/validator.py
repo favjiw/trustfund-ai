@@ -14,7 +14,7 @@ from app.models import (
 from app.prompts.rab_prompt import SYSTEM_INSTRUCTION, build_prompt
 from app.services.benchmark import PriceBenchmark
 from app.services.keywords import heuristic_keyword
-from app.services.llm_client import GeminiClient, LLMClientError
+from app.services.llm_client import LLMClient, LLMClientError
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,7 @@ def _score_to_verdict(score: int) -> Verdict:
 class RABValidator:
     """Orkestrasi: keyword -> benchmark INAPROC -> prompt -> LLM -> susun response."""
 
-    def __init__(self, llm_client: GeminiClient, benchmark: PriceBenchmark) -> None:
+    def __init__(self, llm_client: LLMClient, benchmark: PriceBenchmark) -> None:
         self._llm_client = llm_client
         self._benchmark = benchmark
 

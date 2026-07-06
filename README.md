@@ -37,10 +37,10 @@ app/
   config.py                      # baca ENV (pydantic-settings)
   models.py                      # semua Pydantic schema (request/response)
   services/
-    llm_client.py                 # wrapper Gemini: prompt+schema → hasil tervalidasi (teks & vision)
+    llm_client.py                 # wrapper LLM OpenAI-compatible (Sumopod/DeepSeek): prompt+schema → hasil tervalidasi
     benchmark.py                  # PriceBenchmark (abstrak) + StubBenchmark (MVP, selalu None)
     validator.py                  # Validator RAB: benchmark → prompt → LLM → skor→verdict
-    ocr_service.py                # OCR assist: PaddleOCR + Gemini structuring + vision fallback
+    ocr_service.py                # OCR assist: PaddleOCR + LLM structuring + vision fallback
     forensic.py                   # ELA (Error Level Analysis) deterministik
     milestone_validator.py         # Validator bukti milestone: 4 lapis + verdict di kode
   prompts/
@@ -56,12 +56,13 @@ tests/                           # semua test dengan LLM & OCR di-mock
 python -m venv .venv
 source .venv/Scripts/activate     # Git Bash; PowerShell: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt   # PaddleOCR besar; lihat catatan deploy
-cp .env.example .env              # isi GEMINI_API_KEY (dan INTERNAL_TOKEN)
+cp .env.example .env              # isi LLM_API_KEY Sumopod (dan INTERNAL_TOKEN)
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
 Tanpa PaddleOCR terpasang, service tetap jalan: `/health` menampilkan
-`"ocr_ready": false` dan `/ocr-assist` otomatis memakai Gemini vision fallback.
+`"ocr_ready": false` dan `/ocr-assist` mencoba vision fallback (butuh model LLM
+yang mendukung gambar — lihat catatan OCR di bawah).
 
 ## Menjalankan dengan Docker
 
@@ -90,7 +91,7 @@ mencari keyword `semen` dulu. Karena nama item RAB sering terlalu spesifik
 (mis. *"Semen Portland 40kg Tiga Roda"*), service menurunkan keyword pencarian
 generik lebih dulu:
 
-1. **Ekstraksi keyword** — Gemini memetakan tiap nama item → keyword singkat
+1. **Ekstraksi keyword** — LLM memetakan tiap nama item → keyword singkat
    tanpa merek/angka/satuan (mis. → `semen portland`). Bila panggilan LLM gagal,
    dipakai heuristik lokal (buang angka+satuan, ambil 1-2 kata bermakna).
 2. **Lookup** — service memanggil `inaproc-api` per keyword (di-cache agar
@@ -215,8 +216,10 @@ Contoh respons:
 ```
 
 `source` = `paddleocr` (jalur utama) atau `vision_fallback` (PaddleOCR
-gagal/kosong → gambar dikirim langsung ke Gemini multimodal; aktif via
-`OCR_VISION_FALLBACK=true`).
+gagal/kosong → gambar dikirim langsung ke LLM multimodal; aktif via
+`OCR_VISION_FALLBACK=true` **dan** model LLM mendukung gambar
+(`LLM_SUPPORTS_VISION=true`)). DeepSeek adalah model teks — vision fallback
+tidak tersedia, jadi aktifkan PaddleOCR bila butuh OCR otomatis.
 
 ### POST /api/v1/validate-milestone
 
@@ -335,15 +338,19 @@ curl -X POST http://localhost:8000/api/v1/forensic-ela \
 ### GET /health
 
 ```json
-{"status": "ok", "model": "gemini-2.5-flash", "benchmark_enabled": true, "benchmark_source": "INAPROC", "ocr_ready": false}
+{"status": "ok", "model": "deepseek-v4-pro", "benchmark_enabled": true, "benchmark_source": "INAPROC", "ocr_ready": false}
 ```
 
 ## Daftar ENV
 
 | ENV                              | Default            | Keterangan                                                       |
 |-----------------------------------|---------------------|--------------------------------------------------------------------|
-| `GEMINI_API_KEY`                   | -                   | API key Google Gemini (wajib).                                     |
-| `GEMINI_MODEL`                     | `gemini-2.5-flash`  | Nama model Gemini.                                                 |
+| `LLM_API_KEY`                      | -                   | API key LLM OpenAI-compatible / Sumopod (wajib).                   |
+| `LLM_MODEL`                        | `deepseek-v4-pro`   | Nama model (mis. `deepseek-v4-pro`).                                |
+| `LLM_BASE_URL`                     | `https://ai.sumopod.com/v1` | Base URL API (endpoint `/chat/completions`).               |
+| `LLM_TIMEOUT_SECONDS`              | `60`                | Timeout tiap panggilan LLM.                                        |
+| `LLM_MAX_TOKENS`                   | `4096`              | Batas token output.                                                |
+| `LLM_SUPPORTS_VISION`             | `false`             | `true` bila model mendukung input gambar (DeepSeek: teks saja).    |
 | `INTERNAL_TOKEN`                   | -                   | Shared secret header `X-Internal-Token`.                            |
 | `INTERNAL_AUTH_ENABLED`            | `true`              | `false` = tanpa cek token (dev saja).                               |
 | `CORS_ORIGINS`                     | `*`                 | Origin diizinkan, dipisah koma.                                     |
@@ -352,7 +359,7 @@ curl -X POST http://localhost:8000/api/v1/forensic-ela \
 | `INAPROC_TIMEOUT_SECONDS`          | `20`                | Timeout tiap pencarian keyword ke INAPROC.                          |
 | `INAPROC_PER_PAGE`                 | `30`                | Jumlah produk diambil per keyword.                                  |
 | `INAPROC_MIN_SAMPLES`              | `3`                 | Minimal produk agar benchmark dianggap valid.                       |
-| `OCR_VISION_FALLBACK`              | `true`              | Kirim gambar ke Gemini bila PaddleOCR gagal/kosong.                 |
+| `OCR_VISION_FALLBACK`              | `true`              | Kirim gambar ke LLM bila PaddleOCR gagal/kosong (butuh model vision).|
 | `OCR_LANG`                         | `latin`             | Bahasa model PaddleOCR (`latin` mencakup Indonesia).                |
 | `OCR_MIN_TEXT_LEN`                 | `20`                | Teks OCR lebih pendek dari ini dianggap gagal → fallback.           |
 | `DIFF_REVIEW_PCT`                  | `10`                | Selisih nominal <= ini masih toleransi.                             |
@@ -368,10 +375,14 @@ curl -X POST http://localhost:8000/api/v1/forensic-ela \
 ## Catatan OCR (PaddleOCR ditunda)
 
 Saat ini **PaddleOCR sengaja tidak dipasang** karena terlalu berat (unduhan
-> 1 GB, RAM >= 2 GB). `/ocr-assist` tetap berfungsi penuh lewat **Gemini
-vision fallback** (`OCR_VISION_FALLBACK=true`): gambar nota dikirim langsung
-ke Gemini multimodal, dan `source` pada respons menjadi `vision_fallback`.
-`/health` menampilkan `"ocr_ready": false`.
+> 1 GB, RAM >= 2 GB). `/health` menampilkan `"ocr_ready": false`.
+
+> **Catatan penting dengan DeepSeek:** DeepSeek adalah model **teks**, tidak
+> mendukung input gambar. Jadi vision fallback OCR tidak tersedia — `/ocr-assist`
+> akan mengembalikan hasil kosong + warning (best-effort, tetap 200). Untuk OCR
+> otomatis, pasang PaddleOCR (lihat di bawah), atau pakai model LLM yang
+> mendukung gambar dan set `LLM_SUPPORTS_VISION=true`. Pengisian form manual oleh
+> yayasan tetap jalan tanpa OCR.
 
 Kode sudah siap untuk PaddleOCR — engine dimuat **sekali** saat startup
 (FastAPI lifespan) bila paket tersedia. Untuk mengaktifkannya nanti:
@@ -461,7 +472,7 @@ async function validateMilestone(payload) {
 }
 ```
 
-Jika Gemini gagal/melenceng dari schema, endpoint validasi mengembalikan HTTP
+Jika LLM gagal/melenceng dari schema, endpoint validasi mengembalikan HTTP
 `502` `{"error": "llm_validation_failed", "detail": "..."}` — tangani sebagai
 kegagalan sementara (retry / tandai review manual), bukan penolakan kampanye.
 `/ocr-assist` tidak pernah 5xx untuk kegagalan OCR/LLM: ia mengembalikan 200
