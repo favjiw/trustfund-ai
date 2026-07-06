@@ -3,7 +3,17 @@ uvicorn[standard]==0.34.0
 pydantic==2.10.4
 pydantic-settings==2.7.1
 python-dotenv==1.0.1
+python-multipart==0.0.20
 google-genai==0.8.0
 httpx==0.28.1
+pillow==11.1.0
+numpy==1.26.4
 pytest==8.3.4
 pytest-mock==3.14.0
+
+# --- OCR lokal (PaddleOCR) DITUNDA ---
+# Terlalu berat (>1GB unduhan, RAM >=2GB). Untuk sekarang /ocr-assist memakai
+# Gemini vision fallback (OCR_VISION_FALLBACK=true). Aktifkan PaddleOCR nanti
+# dengan meng-uncomment baris di bawah lalu `pip install -r requirements.txt`:
+# paddleocr==2.7.3
+# paddlepaddle==2.6.1

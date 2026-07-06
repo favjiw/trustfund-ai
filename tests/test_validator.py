@@ -20,6 +20,10 @@ class FakeLLMClient:
         self._result = result
         self._error = error
 
+    def extract_search_keywords(self, items: list[tuple[str, str]]) -> dict[str, str]:
+        # Keyword tidak relevan untuk test ini (benchmark StubBenchmark selalu None).
+        return {item_id: name.lower() for item_id, name in items}
+
     def assess_rab(self, system_instruction: str, prompt: str) -> LLMValidationResult:
         if self._error is not None:
             raise self._error
