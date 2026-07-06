@@ -18,6 +18,9 @@ class PriceBenchmark(ABC):
     di lapisan validator (lihat keyword extraction).
     """
 
+    #: True bila ada sumber pembanding nyata (mempengaruhi apakah keyword LLM perlu diambil).
+    enabled: bool = False
+
     @abstractmethod
     def lookup(self, keyword: str) -> BenchmarkResult | None:
         """Kembalikan statistik harga pembanding untuk sebuah keyword, atau
@@ -27,6 +30,8 @@ class PriceBenchmark(ABC):
 
 class StubBenchmark(PriceBenchmark):
     """MVP: tidak ada sumber pembanding, selalu kembalikan None."""
+
+    enabled = False
 
     def lookup(self, keyword: str) -> BenchmarkResult | None:
         return None
@@ -42,6 +47,7 @@ class InaprocBenchmark(PriceBenchmark):
     """
 
     SOURCE = "katalog.inaproc.id (via inaproc-api)"
+    enabled = True
 
     def __init__(self, settings: Settings, client: httpx.Client | None = None) -> None:
         self._settings = settings

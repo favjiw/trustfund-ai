@@ -55,6 +55,10 @@ class RABValidator:
         return keywords
 
     def _lookup_benchmarks(self, items: list[RABItemRequest]) -> dict[str, BenchmarkResult | None]:
+        # Tanpa sumber benchmark, lewati ekstraksi keyword LLM (hemat 1 panggilan per evaluasi).
+        if not self._benchmark.enabled:
+            return {item.id: None for item in items}
+
         keywords = self._resolve_keywords(items)
         cache: dict[str, BenchmarkResult | None] = {}
         benchmarks: dict[str, BenchmarkResult | None] = {}

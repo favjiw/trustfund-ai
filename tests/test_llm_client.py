@@ -52,9 +52,48 @@ def test_strips_markdown_code_fence():
 
 
 def test_http_error_raises_llm_client_error():
-    client = _client(lambda r: httpx.Response(429, json={"error": "rate limit"}))
+    client = _client(lambda r: httpx.Response(429, json={"error": "rate limit"}), max_retries=0)
     with pytest.raises(LLMClientError):
         client.assess_rab("sys", "prompt")
+
+
+def test_retries_then_succeeds_on_transient_503(monkeypatch):
+    monkeypatch.setattr("app.services.llm_client.time.sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            return httpx.Response(503, json={"error": "high demand"})
+        payload = {"overall_score": 77, "summary": "ok", "item_assessments": [], "flags": []}
+        return httpx.Response(200, json=_completion(json.dumps(payload)))
+
+    client = _client(handler, max_retries=3, retry_backoff_seconds=0)
+    result = client.assess_rab("sys", "prompt")
+    assert result.overall_score == 77
+    assert calls["n"] == 3  # 2 gagal + 1 sukses
+
+
+def test_does_not_retry_on_auth_error(monkeypatch):
+    monkeypatch.setattr("app.services.llm_client.time.sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(401, json={"error": "bad key"})
+
+    client = _client(handler, max_retries=3)
+    with pytest.raises(LLMClientError):
+        client.assess_rab("sys", "prompt")
+    assert calls["n"] == 1  # 401 tidak di-retry
+
+
+def test_error_message_does_not_leak_response_body():
+    secret_body = {"error": "Received API Key = sk-REALSECRET123"}
+    client = _client(lambda r: httpx.Response(401, json=secret_body), max_retries=0)
+    with pytest.raises(LLMClientError) as excinfo:
+        client.assess_rab("sys", "prompt")
+    assert "sk-REALSECRET123" not in str(excinfo.value)
 
 
 def test_invalid_json_raises_llm_client_error():

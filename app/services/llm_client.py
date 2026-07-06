@@ -2,6 +2,7 @@ import base64
 import json
 import logging
 import re
+import time
 from typing import TypeVar
 
 import httpx
@@ -81,6 +82,8 @@ class LLMClient:
     schema di prompt, lalu memvalidasi dengan Pydantic.
     """
 
+    _RETRIABLE_STATUS = {429, 500, 502, 503, 504}
+
     def __init__(
         self,
         api_key: str,
@@ -89,6 +92,8 @@ class LLMClient:
         timeout_seconds: float = 60.0,
         max_tokens: int = 4096,
         supports_vision: bool = False,
+        max_retries: int = 2,
+        retry_backoff_seconds: float = 0.5,
         client: httpx.Client | None = None,
     ) -> None:
         self._api_key = api_key
@@ -96,7 +101,19 @@ class LLMClient:
         self._base_url = base_url.rstrip("/")
         self._max_tokens = max_tokens
         self._supports_vision = supports_vision
+        self._max_retries = max_retries
+        self._retry_backoff = retry_backoff_seconds
         self._client = client or httpx.Client(timeout=timeout_seconds)
+
+    def _post_once(self, payload: dict) -> httpx.Response:
+        return self._client.post(
+            f"{self._base_url}/chat/completions",
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
 
     def _chat(self, messages: list[dict], temperature: float) -> str:
         payload = {
@@ -106,22 +123,34 @@ class LLMClient:
             "max_tokens": self._max_tokens,
             "response_format": {"type": "json_object"},
         }
-        try:
-            response = self._client.post(
-                f"{self._base_url}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {self._api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=payload,
-            )
-            response.raise_for_status()
-            data = response.json()
-        except httpx.HTTPStatusError as exc:
-            body = exc.response.text[:300]
-            raise LLMClientError(f"Panggilan LLM gagal (HTTP {exc.response.status_code}): {body}") from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            raise LLMClientError(f"Panggilan LLM gagal: {exc}") from exc
+
+        last_error: Exception | None = None
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._post_once(payload)
+                response.raise_for_status()
+                data = response.json()
+                break
+            except httpx.HTTPStatusError as exc:
+                status = exc.response.status_code
+                last_error = LLMClientError(f"Panggilan LLM gagal (HTTP {status})")
+                # Retry hanya untuk error transient; 4xx lain (mis. 401/400) langsung gagal.
+                if status in self._RETRIABLE_STATUS and attempt < self._max_retries:
+                    logger.warning("LLM HTTP %s, retry %d/%d...", status, attempt + 1, self._max_retries)
+                    time.sleep(self._retry_backoff * (2**attempt))
+                    continue
+                raise last_error from exc
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                last_error = LLMClientError(f"Panggilan LLM gagal (jaringan): {type(exc).__name__}")
+                if attempt < self._max_retries:
+                    logger.warning("LLM error jaringan, retry %d/%d...", attempt + 1, self._max_retries)
+                    time.sleep(self._retry_backoff * (2**attempt))
+                    continue
+                raise last_error from exc
+            except (httpx.HTTPError, ValueError) as exc:
+                raise LLMClientError(f"Panggilan LLM gagal: {type(exc).__name__}") from exc
+        else:  # pragma: no cover - dijaga oleh raise di dalam loop
+            raise last_error or LLMClientError("Panggilan LLM gagal")
 
         try:
             return data["choices"][0]["message"]["content"]

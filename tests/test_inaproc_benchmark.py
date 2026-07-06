@@ -119,6 +119,8 @@ class FakeLLM:
 
 
 class SpyBenchmark(StubBenchmark):
+    enabled = True  # aktifkan jalur keyword+lookup di validator
+
     def __init__(self, result: BenchmarkResult | None) -> None:
         self._result = result
         self.keywords: list[str] = []

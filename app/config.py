@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_tokens: int = 4096
     llm_supports_vision: bool = False  # DeepSeek text-only; set true bila model mendukung gambar
+    llm_max_retries: int = 2  # retry pada 429/5xx transient
+    llm_retry_backoff_seconds: float = 0.5
 
     internal_token: str = ""
     internal_auth_enabled: bool = True

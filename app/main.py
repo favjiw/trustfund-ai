@@ -31,9 +31,25 @@ logger = logging.getLogger("trustfund_ai")
 PUBLIC_PATHS = {"/health", "/docs", "/openapi.json", "/redoc"}
 
 
+def _validate_settings(settings) -> None:
+    """Fail-fast: pastikan konfigurasi kritikal terisi sebelum melayani request."""
+    if not settings.llm_api_key.strip():
+        raise RuntimeError("LLM_API_KEY belum diisi — set di .env sebelum menjalankan service.")
+
+    if settings.internal_auth_enabled:
+        if not settings.internal_token.strip():
+            raise RuntimeError("INTERNAL_AUTH_ENABLED=true tetapi INTERNAL_TOKEN kosong.")
+    else:
+        logger.warning(
+            "INTERNAL_AUTH_ENABLED=false — endpoint TANPA proteksi token. "
+            "Hanya untuk dev lokal; JANGAN dipakai di production."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings = get_settings()
+    _validate_settings(settings)
 
     llm_client = LLMClient(
         api_key=settings.llm_api_key,
@@ -42,6 +58,8 @@ async def lifespan(app: FastAPI):
         timeout_seconds=settings.llm_timeout_seconds,
         max_tokens=settings.llm_max_tokens,
         supports_vision=settings.llm_supports_vision,
+        max_retries=settings.llm_max_retries,
+        retry_backoff_seconds=settings.llm_retry_backoff_seconds,
     )
     benchmark = build_benchmark(settings)
     validator = RABValidator(llm_client=llm_client, benchmark=benchmark)
@@ -96,12 +114,16 @@ app.add_middleware(
 )
 
 
+# Pesan generik ke klien; detail lengkap (mungkin memuat respons provider) hanya di log server.
+_LLM_ERROR_DETAIL = "Evaluasi AI gagal sementara. Silakan coba lagi."
+
+
 @app.exception_handler(RABValidationError)
 async def rab_validation_error_handler(request: Request, exc: RABValidationError):
     logger.error("RAB validation failed: %s", exc)
     return JSONResponse(
         status_code=502,
-        content={"error": "llm_validation_failed", "detail": str(exc)},
+        content={"error": "llm_validation_failed", "detail": _LLM_ERROR_DETAIL},
     )
 
 
@@ -110,7 +132,7 @@ async def milestone_validation_error_handler(request: Request, exc: MilestoneVal
     logger.error("Milestone validation failed: %s", exc)
     return JSONResponse(
         status_code=502,
-        content={"error": "llm_validation_failed", "detail": str(exc)},
+        content={"error": "llm_validation_failed", "detail": _LLM_ERROR_DETAIL},
     )
 
 
