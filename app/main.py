@@ -78,6 +78,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
+    root_path="/trustfund-ai",
     title="TrustFund AI - RAB Validator",
     description=(
         "Microservice AI untuk memvalidasi kewajaran RAB, OCR assist nota, dan "
