@@ -233,3 +233,68 @@ class ElaResponse(BaseModel):
     photo_ref: str | None = None
     suspicion: Suspicion
     metrics: dict[str, float]
+
+
+# ---------------------------------------------------------------------------
+# AI Planner & pagar struktur milestone
+# ---------------------------------------------------------------------------
+
+
+class EvidenceType(str, Enum):
+    NOTA = "NOTA"
+    FOTO_GEOTAG = "FOTO_GEOTAG"
+    SERAH_TERIMA = "SERAH_TERIMA"
+    LAPORAN = "LAPORAN"
+
+
+class StructureViolation(BaseModel):
+    code: str
+    message: str
+
+
+class StructureCheckResult(BaseModel):
+    valid: bool
+    violations: list[StructureViolation] = Field(default_factory=list)
+    warnings: list[StructureViolation] = Field(default_factory=list)
+
+
+class StructureMilestoneInput(BaseModel):
+    order: int = Field(ge=1)
+    title: str = ""
+    percentage: float = Field(gt=0, le=100)
+    # Kosong = backend hanya mengecek struktur porsi, tanpa cek paket bukti.
+    evidence_types: list[EvidenceType] = Field(default_factory=list)
+
+
+class ValidateStructureRequest(BaseModel):
+    campaign_type: CampaignType
+    milestones: list[StructureMilestoneInput] = Field(min_length=1)
+
+
+class PlanMilestonesRequest(BaseModel):
+    campaign_id: str
+    campaign_type: CampaignType
+    campaign_title: str
+    campaign_description: str
+    location: str
+    duration_days: int | None = Field(default=None, gt=0)
+    items: list[RABItemRequest] = Field(min_length=1)
+
+
+class PlannedMilestone(BaseModel):
+    order: int
+    title: str
+    percentage: float
+    amount: float
+    definition_of_done: str
+    evidence_types: list[EvidenceType]
+    item_ids: list[str]
+    reason: str
+
+
+class PlanMilestonesResponse(BaseModel):
+    campaign_id: str
+    total_amount: float
+    milestones: list[PlannedMilestone]
+    structure_check: StructureCheckResult
+    summary: str

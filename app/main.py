@@ -14,16 +14,22 @@ from app.models import (
     EvaluateRABRequest,
     EvaluateRABResponse,
     OcrAssistResponse,
+    PlanMilestonesRequest,
+    PlanMilestonesResponse,
+    StructureCheckResult,
     ValidateMilestoneRequest,
     ValidateMilestoneResponse,
     ValidateRABRequest,
     ValidateRABResponse,
+    ValidateStructureRequest,
 )
 from app.services.benchmark import build_benchmark
 from app.services.forensic import InvalidForensicImageError, compute_ela
 from app.services.llm_client import LLMClient
 from app.services.milestone_validator import MilestoneValidationError, MilestoneValidator
 from app.services.ocr_service import InvalidImageError, OcrService
+from app.services.planner import MilestonePlanner, PlannerError
+from app.services.structure_guard import check_structure
 from app.services.validator import RABValidationError, RABValidator
 
 logger = logging.getLogger("trustfund_ai")
@@ -68,11 +74,13 @@ async def lifespan(app: FastAPI):
     ocr_service.load()  # muat model PaddleOCR sekali di sini, bukan per-request
 
     milestone_validator = MilestoneValidator(llm_client=llm_client, settings=settings)
+    planner = MilestonePlanner(llm_client=llm_client, settings=settings)
 
     app.state.settings = settings
     app.state.validator = validator
     app.state.ocr_service = ocr_service
     app.state.milestone_validator = milestone_validator
+    app.state.planner = planner
 
     yield
 
@@ -125,6 +133,15 @@ async def rab_validation_error_handler(request: Request, exc: RABValidationError
     return JSONResponse(
         status_code=502,
         content={"error": "llm_validation_failed", "detail": _LLM_ERROR_DETAIL},
+    )
+
+
+@app.exception_handler(PlannerError)
+async def planner_error_handler(request: Request, exc: PlannerError):
+    logger.error("Milestone planning failed: %s", exc)
+    return JSONResponse(
+        status_code=502,
+        content={"error": "llm_planning_failed", "detail": _LLM_ERROR_DETAIL},
     )
 
 
@@ -211,6 +228,22 @@ async def ocr_assist(
         return ocr_service.assist(image_bytes, hints)
     except InvalidImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/v1/plan-milestones", response_model=PlanMilestonesResponse)
+async def plan_milestones(payload: PlanMilestonesRequest, request: Request):
+    """AI Planner: susun draf struktur milestone (retensi progresif) dari RAB +
+    konteks kampanye. Draf sudah lolos pagar sistem (lihat structure_check)."""
+    planner: MilestonePlanner = request.app.state.planner
+    return planner.plan(payload)
+
+
+@app.post("/api/v1/validate-milestone-structure", response_model=StructureCheckResult)
+async def validate_milestone_structure(payload: ValidateStructureRequest, request: Request):
+    """Pagar struktur milestone — deterministik, tanpa LLM. Dipanggil backend tiap
+    yayasan mengedit draf, sebelum struktur di-LOCK ke smart contract."""
+    settings = request.app.state.settings
+    return check_structure(payload.campaign_type, payload.milestones, settings)
 
 
 @app.post("/api/v1/validate-milestone", response_model=ValidateMilestoneResponse)

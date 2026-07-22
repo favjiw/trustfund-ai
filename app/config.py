@@ -44,6 +44,15 @@ class Settings(BaseSettings):
     # Geolokasi
     geo_radius_meters: float = 200.0
 
+    # Pagar struktur milestone (AI Planner & validator struktur)
+    milestone_min_count: int = 2
+    milestone_max_count: int = 6
+    dp_max_pct: float = 15.0
+    milestone_max_pct: float = 40.0
+    final_retention_min_pct: float = 20.0
+    structure_sum_tolerance_pct: float = 0.5
+    planner_max_attempts: int = 2  # 1x generate + (n-1)x retry dengan feedback pelanggaran
+
     # Forensik ELA (Error Level Analysis)
     ela_jpeg_quality: int = 90
     ela_sedang_threshold: float = 12.0
