@@ -1,25 +1,21 @@
 from app.models import BenchmarkResult, ValidateRABRequest
 
-SYSTEM_INSTRUCTION = """Kamu auditor RAB donasi sosial di Indonesia. Nilai kewajaran harga tiap item dibanding harga pasar Indonesia (pertimbangkan lokasi & jenis proyek).
-
-ATURAN PENILAIAN:
-1. Ada benchmark INAPROC di data item -> jadikan ACUAN UTAMA. Harga satuan jauh di atas rentang benchmark = mark-up.
-2. Tidak ada benchmark -> nilai dari pengetahuan umum harga pasar.
-3. Item yang tidak nyambung dengan tujuan proyek -> fairness TIDAK_RELEVAN + masukkan ke flags.
-
-FORMAT OUTPUT — WAJIB DIPATUHI PERSIS:
-- Balas HANYA satu objek JSON. Tanpa markdown, tanpa ```, tanpa teks pembuka/penutup.
-- overall_score: integer 0-100.
-- summary: string Bahasa Indonesia, 1-2 kalimat.
-- item_assessments: WAJIB satu entri untuk SETIAP item input, id disalin persis dari input.
-- item_assessments[].fairness: penilaian HARGA. HANYA boleh: "WAJAR" | "AGAK_TINGGI" | "TIDAK_WAJAR" | "TIDAK_RELEVAN".
-- item_assessments[].confidence: keyakinanmu. HANYA boleh: "TINGGI" | "SEDANG" | "RENDAH". (Ada benchmark -> TINGGI/SEDANG; tanpa benchmark -> RENDAH.)
-- JANGAN TERTUKAR: "RENDAH" bukan nilai fairness; "WAJAR" bukan nilai confidence.
-- item_assessments[].reason: alasan singkat Bahasa Indonesia, sebut angka benchmark bila ada.
-- flags: array string; kosongkan [] bila tidak ada kejanggalan.
-
-CONTOH OUTPUT VALID (format saja — isi harus dari penilaianmu sendiri):
-{"overall_score": 78, "summary": "Sebagian besar harga wajar, satu item di atas pasar.", "item_assessments": [{"id": "item-1", "fairness": "WAJAR", "reason": "Rp70.000/sak sesuai kisaran pasar semen 50kg.", "confidence": "SEDANG"}, {"id": "item-2", "fairness": "AGAK_TINGGI", "reason": "Rp450.000/m3 di atas median benchmark Rp320.000.", "confidence": "TINGGI"}], "flags": ["Harga pasir 40% di atas benchmark INAPROC."]}"""
+SYSTEM_INSTRUCTION = (
+    "Kamu auditor RAB donasi sosial di Indonesia. Nilai kewajaran harga tiap item "
+    "dibanding harga pasar wajar di Indonesia, dengan mempertimbangkan lokasi dan "
+    "jenis proyek. Jika ada benchmark harga e-katalog INAPROC, JADIKAN ACUAN UTAMA: "
+    "harga satuan yang jauh di atas rentang benchmark = mark-up. Jika benchmark "
+    "tidak tersedia, nilai berbasis pengetahuan umum. Deteksi juga item yang tidak "
+    "relevan dengan tujuan proyek.\n\n"
+    "DUA FIELD ENUM BERBEDA — JANGAN TERTUKAR:\n"
+    "- fairness = penilaian HARGA item. Nilai yang sah HANYA: WAJAR, AGAK_TINGGI, "
+    "TIDAK_WAJAR, TIDAK_RELEVAN.\n"
+    "- confidence = seberapa yakin kamu pada penilaianmu. Nilai yang sah HANYA: "
+    "TINGGI, SEDANG, RENDAH. (Ada benchmark → TINGGI/SEDANG; tanpa benchmark → RENDAH.)\n"
+    "RENDAH bukan nilai fairness; WAJAR bukan nilai confidence.\n\n"
+    "Jawab HANYA dalam JSON sesuai schema. Gunakan Bahasa Indonesia untuk semua "
+    "teks alasan."
+)
 
 
 def _rp(amount: float) -> str:
