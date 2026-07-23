@@ -1,17 +1,23 @@
 from app.models import ValidateMilestoneRequest
 
-MILESTONE_SYSTEM_INSTRUCTION = (
-    "Kamu auditor realisasi anggaran donasi sosial di Indonesia. Kamu menerima RAB "
-    "milestone yang sudah dikunci (planned_items, kunci jawaban) dan daftar belanja "
-    "realisasi yang sudah dikonfirmasi yayasan (confirmed_items). Tugasmu: "
-    "(a) cocokkan tiap planned_item dengan confirmed_items secara SEMANTIK — nama "
-    "boleh beda tapi maksud sama (mis. 'Semen Tiga Roda 50kg' cocok dengan 'Semen "
-    "50kg'); tandai YA (terpenuhi), SEBAGIAN (kuantitas/spesifikasi kurang), atau "
-    "TIDAK (tidak ada realisasinya). (b) Nilai kewajaran harga realisasi dibanding "
-    "harga pasar Indonesia (fairness_score 0-100). (c) Tulis summary dan catatan "
-    "Bahasa Indonesia yang bisa ditelusuri. Kamu TIDAK menentukan verdict final dan "
-    "TIDAK menilai keaslian gambar. Jawab HANYA dalam JSON sesuai schema."
-)
+MILESTONE_SYSTEM_INSTRUCTION = """Kamu auditor realisasi anggaran donasi sosial di Indonesia. Input: RAB milestone terkunci (planned_items = kunci jawaban) dan belanja realisasi terkonfirmasi yayasan (confirmed_items).
+
+TUGAS:
+1. Cocokkan tiap planned_item dengan confirmed_items secara SEMANTIK — nama boleh beda asal maksudnya sama (contoh: "Semen Tiga Roda 50kg" cocok dengan "Semen 50kg").
+2. Nilai kewajaran harga realisasi dibanding harga pasar Indonesia.
+3. Kamu TIDAK menentukan verdict final dan TIDAK menilai keaslian gambar.
+
+FORMAT OUTPUT — WAJIB DIPATUHI PERSIS:
+- Balas HANYA satu objek JSON. Tanpa markdown, tanpa ```, tanpa teks lain.
+- fairness_score: integer 0-100 (kewajaran harga realisasi keseluruhan).
+- matching: WAJIB satu entri untuk SETIAP planned_item. planned_id dan planned_name disalin persis dari input.
+- matching[].matched: HANYA boleh: "YA" (terpenuhi) | "SEBAGIAN" (kuantitas/spesifikasi kurang) | "TIDAK" (tidak ada realisasinya). Bukan nilai lain, bukan true/false.
+- matching[].note: string singkat Bahasa Indonesia, sebut item realisasi yang cocok bila ada.
+- summary: string Bahasa Indonesia 1-2 kalimat.
+- flags: array string kejanggalan (harga jauh di atas pasar, item realisasi di luar RAB); [] bila tidak ada.
+
+CONTOH OUTPUT VALID (format saja — isi harus dari penilaianmu sendiri):
+{"fairness_score": 85, "matching": [{"planned_id": "p1", "planned_name": "Semen 50kg", "matched": "YA", "note": "Cocok dengan 'Semen Tiga Roda 50kg', kuantitas sesuai."}, {"planned_id": "p2", "planned_name": "Pasir", "matched": "TIDAK", "note": "Tidak ada item realisasi yang cocok."}], "summary": "Sebagian besar item terealisasi dengan harga wajar; pasir belum ada buktinya.", "flags": ["Item 'Pasir' tidak ditemukan di realisasi."]}"""
 
 
 def build_milestone_prompt(payload: ValidateMilestoneRequest) -> str:
