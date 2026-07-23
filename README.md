@@ -11,7 +11,9 @@ Kemampuan:
 |---------------------------------|-----------------------|----------------------------------------------------------------|
 | `POST /evaluate-rab`              | Wajib, menentukan     | **Kontrak backend NexTrust** — evaluasi RAB, hasil disimpan ke tabel `RabCheck` |
 | `POST /api/v1/validate-rab`       | Wajib, menentukan     | Versi kaya dari evaluasi RAB (detail per item + verdict)        |
-| `POST /api/v1/ocr-assist`         | Opsional, best-effort | Menyarankan isian form dari foto nota (dikoreksi manusia)      |
+| `POST /api/v1/plan-milestones`    | Wajib, menentukan     | **AI Planner** — susun draf struktur milestone dari RAB (retensi progresif) |
+| `POST /api/v1/validate-milestone-structure` | Wajib, deterministik | Pagar struktur milestone (tanpa LLM) — dipanggil tiap yayasan edit draf |
+| `POST /api/v1/parse-nota`         | Opsional, asistensi   | Foto nota → JSON item terstruktur via vision LLM (dikoreksi manusia) |
 | `POST /api/v1/validate-milestone` | Wajib, menentukan     | Menilai bukti realisasi milestone yang sudah dikonfirmasi yayasan |
 | `POST /api/v1/forensic-ela`       | Opsional              | Menghitung sinyal ELA satu foto (pendukung validate-milestone) |
 
@@ -24,10 +26,14 @@ selaras dengan `CampaignCategory` di skema Prisma backend: `PEMBANGUNAN`,
 > backend Node.js TrustFund dengan header `X-Internal-Token` yang cocok dengan
 > ENV `INTERNAL_TOKEN`. Jangan expose service ini langsung ke internet.
 
-> **Prinsip inti OCR:** OCR BUKAN input utama. `/ocr-assist` hanya memberi
-> SARAN isian; yayasan mengoreksi/mengisi manual di web; `/validate-milestone`
-> bekerja atas data TERKONFIRMASI yayasan, BUKAN hasil OCR mentah. Validasi
-> tidak bergantung pada keberhasilan OCR.
+> **Prinsip inti parse nota:** hasil baca nota BUKAN input utama.
+> `/parse-nota` (vision LLM) hanya memberi SARAN isian; yayasan
+> mengoreksi/mengonfirmasi di web; `/validate-milestone` (DeepSeek) bekerja
+> atas data TERKONFIRMASI yayasan, BUKAN hasil baca mentah.
+>
+> Alur nota: **upload nota → `/parse-nota` (vision LLM, JSON konsisten) →
+> konfirmasi yayasan → `/validate-milestone` (DeepSeek mencocokkan dengan RAB
+> milestone terkunci).**
 
 ## Struktur proyek
 
@@ -37,17 +43,20 @@ app/
   config.py                      # baca ENV (pydantic-settings)
   models.py                      # semua Pydantic schema (request/response)
   services/
-    llm_client.py                 # wrapper LLM OpenAI-compatible (Sumopod/DeepSeek): prompt+schema → hasil tervalidasi
+    llm_client.py                 # wrapper LLM OpenAI-compatible: teks → model utama, gambar → model vision
     benchmark.py                  # PriceBenchmark (abstrak) + StubBenchmark (MVP, selalu None)
     validator.py                  # Validator RAB: benchmark → prompt → LLM → skor→verdict
-    ocr_service.py                # OCR assist: PaddleOCR + LLM structuring + vision fallback
+    planner.py                    # AI Planner: LLM susun draf milestone, kode tegakkan pagar
+    structure_guard.py            # Pagar struktur milestone (deterministik, tanpa LLM)
+    nota_parser.py                # Foto nota → JSON item terstruktur (vision LLM)
     forensic.py                   # ELA (Error Level Analysis) deterministik
     milestone_validator.py         # Validator bukti milestone: 4 lapis + verdict di kode
   prompts/
     rab_prompt.py                  # prompt Validator RAB
-    ocr_parse_prompt.py            # prompt strukturisasi teks OCR / baca nota (vision)
+    planner_prompt.py              # prompt AI Planner (pagar ditulis eksplisit)
+    nota_prompt.py                 # prompt baca nota (vision)
     milestone_prompt.py            # prompt matching semantik + kewajaran realisasi
-tests/                           # semua test dengan LLM & OCR di-mock
+tests/                           # semua test dengan LLM di-mock
 ```
 
 ## Menjalankan secara lokal
@@ -55,14 +64,14 @@ tests/                           # semua test dengan LLM & OCR di-mock
 ```bash
 python -m venv .venv
 source .venv/Scripts/activate     # Git Bash; PowerShell: .venv\Scripts\Activate.ps1
-pip install -r requirements.txt   # PaddleOCR besar; lihat catatan deploy
-cp .env.example .env              # isi LLM_API_KEY Sumopod (dan INTERNAL_TOKEN)
+pip install -r requirements.txt
+cp .env.example .env              # isi LLM_API_KEY Sumopod, INTERNAL_TOKEN, LLM_VISION_MODEL
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Tanpa PaddleOCR terpasang, service tetap jalan: `/health` menampilkan
-`"ocr_ready": false` dan `/ocr-assist` mencoba vision fallback (butuh model LLM
-yang mendukung gambar — lihat catatan OCR di bawah).
+`LLM_VISION_MODEL` (mis. `gpt-5-nano` di Sumopod) wajib diisi agar `/parse-nota`
+berfungsi — model utama DeepSeek text-only. Tanpa itu, semua endpoint lain
+tetap jalan; hanya `/parse-nota` yang mengembalikan 502.
 
 ## Menjalankan dengan Docker
 
@@ -73,7 +82,7 @@ docker run --rm -p 8000:8000 --env-file .env trustfund-ai
 
 ## Menjalankan test
 
-Semua test memakai LLM/OCR yang di-mock (tanpa API asli, tanpa PaddleOCR):
+Semua test memakai LLM yang di-mock (tanpa API asli):
 
 ```bash
 pytest
@@ -175,17 +184,18 @@ curl -X POST http://localhost:8000/api/v1/validate-rab \
   }'
 ```
 
-### POST /api/v1/ocr-assist
+### POST /api/v1/parse-nota
 
-Best-effort: dari foto nota, hasilkan **saran** isian (item, qty, harga) untuk
-dikoreksi manusia di frontend. Tidak menilai kewajaran; nilai yang tidak yakin
-= `null` + confidence `RENDAH`. Selalu 200 dengan hasil parsial bila mungkin;
-400 hanya untuk input yang bukan gambar.
+Foto nota → JSON item terstruktur via **vision LLM** (`LLM_VISION_MODEL`).
+Tidak menilai kewajaran; nilai yang tidak yakin = `null` + confidence `RENDAH`.
+Hasilnya ditampilkan di form frontend untuk DIKONFIRMASI yayasan, lalu backend
+mengirim data terkonfirmasi ke `/validate-milestone`. Gagal baca (model/jaringan)
+= HTTP 502 eksplisit; 400 untuk input yang bukan gambar.
 
 Upload multipart (file + hint opsional):
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/ocr-assist \
+curl -X POST http://localhost:8000/api/v1/parse-nota \
   -H "X-Internal-Token: $INTERNAL_TOKEN" \
   -F "file=@nota.jpg" \
   -F 'hint_items=["Semen Portland 40kg","Pasir cor"]'
@@ -194,7 +204,7 @@ curl -X POST http://localhost:8000/api/v1/ocr-assist \
 Atau JSON base64:
 
 ```bash
-curl -X POST http://localhost:8000/api/v1/ocr-assist \
+curl -X POST http://localhost:8000/api/v1/parse-nota \
   -H "Content-Type: application/json" \
   -H "X-Internal-Token: $INTERNAL_TOKEN" \
   -d "{\"image_base64\": \"$(base64 -w0 nota.jpg)\", \"hint_items\": [\"Semen Portland 40kg\"]}"
@@ -204,9 +214,8 @@ Contoh respons:
 
 ```json
 {
-  "source": "paddleocr",
   "raw_text": "TOKO BANGUNAN JAYA\nSemen 40kg 50 x 65.000 = 3.250.000\n...",
-  "suggested_items": [
+  "items": [
     {"name": "Semen 40kg", "quantity": 50, "unit_price": 65000, "subtotal": 3250000, "confidence": "TINGGI"},
     {"name": "Paku", "quantity": null, "unit_price": null, "subtotal": 45000, "confidence": "RENDAH"}
   ],
@@ -214,12 +223,6 @@ Contoh respons:
   "warnings": ["tulisan sebagian tidak terbaca"]
 }
 ```
-
-`source` = `paddleocr` (jalur utama) atau `vision_fallback` (PaddleOCR
-gagal/kosong → gambar dikirim langsung ke LLM multimodal; aktif via
-`OCR_VISION_FALLBACK=true` **dan** model LLM mendukung gambar
-(`LLM_SUPPORTS_VISION=true`)). DeepSeek adalah model teks — vision fallback
-tidak tersedia, jadi aktifkan PaddleOCR bila butuh OCR otomatis.
 
 ### POST /api/v1/validate-milestone
 
@@ -338,7 +341,7 @@ curl -X POST http://localhost:8000/api/v1/forensic-ela \
 ### GET /health
 
 ```json
-{"status": "ok", "model": "deepseek-v4-pro", "benchmark_enabled": true, "benchmark_source": "INAPROC", "ocr_ready": false}
+{"status": "ok", "model": "deepseek-v4-pro", "vision_model": "gpt-5-nano", "vision_ready": true, "benchmark_enabled": true, "benchmark_source": "INAPROC"}
 ```
 
 ## Daftar ENV
@@ -350,7 +353,15 @@ curl -X POST http://localhost:8000/api/v1/forensic-ela \
 | `LLM_BASE_URL`                     | `https://ai.sumopod.com/v1` | Base URL API (endpoint `/chat/completions`).               |
 | `LLM_TIMEOUT_SECONDS`              | `60`                | Timeout tiap panggilan LLM.                                        |
 | `LLM_MAX_TOKENS`                   | `4096`              | Batas token output.                                                |
-| `LLM_SUPPORTS_VISION`             | `false`             | `true` bila model mendukung input gambar (DeepSeek: teks saja).    |
+| `LLM_SUPPORTS_VISION`             | `false`             | `true` bila model UTAMA mendukung input gambar (DeepSeek: teks saja).|
+| `LLM_VISION_MODEL`                 | (kosong)            | Model vision untuk `/parse-nota` (mis. `gpt-5-nano`). Wajib bila model utama text-only.|
+| `LLM_VISION_BASE_URL`              | (kosong)            | Endpoint model vision bila beda provider; kosong = ikut `LLM_BASE_URL`.|
+| `LLM_VISION_API_KEY`               | (kosong)            | API key model vision bila beda provider; kosong = ikut `LLM_API_KEY`.|
+| `MILESTONE_MIN_COUNT` / `MILESTONE_MAX_COUNT` | `2` / `6` | Batas keras jumlah tahap milestone.                             |
+| `DP_MAX_PCT`                       | `15`                | Porsi maksimal milestone pertama (DP).                              |
+| `MILESTONE_MAX_PCT`                | `40`                | Porsi maksimal satu milestone.                                      |
+| `FINAL_RETENTION_MIN_PCT`          | `20`                | Retensi akhir di bawah ini → warning.                               |
+| `PLANNER_MAX_ATTEMPTS`             | `2`                 | Percobaan AI Planner sebelum menyerah (retry dengan feedback pagar).|
 | `INTERNAL_TOKEN`                   | -                   | Shared secret header `X-Internal-Token`.                            |
 | `INTERNAL_AUTH_ENABLED`            | `true`              | `false` = tanpa cek token (dev saja).                               |
 | `CORS_ORIGINS`                     | `*`                 | Origin diizinkan, dipisah koma.                                     |
@@ -359,9 +370,6 @@ curl -X POST http://localhost:8000/api/v1/forensic-ela \
 | `INAPROC_TIMEOUT_SECONDS`          | `20`                | Timeout tiap pencarian keyword ke INAPROC.                          |
 | `INAPROC_PER_PAGE`                 | `30`                | Jumlah produk diambil per keyword.                                  |
 | `INAPROC_MIN_SAMPLES`              | `3`                 | Minimal produk agar benchmark dianggap valid.                       |
-| `OCR_VISION_FALLBACK`              | `true`              | Kirim gambar ke LLM bila PaddleOCR gagal/kosong (butuh model vision).|
-| `OCR_LANG`                         | `latin`             | Bahasa model PaddleOCR (`latin` mencakup Indonesia).                |
-| `OCR_MIN_TEXT_LEN`                 | `20`                | Teks OCR lebih pendek dari ini dianggap gagal → fallback.           |
 | `DIFF_REVIEW_PCT`                  | `10`                | Selisih nominal <= ini masih toleransi.                             |
 | `DIFF_SUSPICIOUS_PCT`              | `25`                | Selisih di atas ini → SUSPICIOUS.                                   |
 | `UNDERSPEND_TOLERANCE_MULTIPLIER`  | `1.5`               | Pengali threshold bila realisasi lebih murah.                       |
@@ -372,29 +380,15 @@ curl -X POST http://localhost:8000/api/v1/forensic-ela \
 | `ELA_SEDANG_THRESHOLD`             | `12`                | mean_diff >= ini → suspicion SEDANG.                                |
 | `ELA_TINGGI_THRESHOLD`             | `20`                | mean_diff >= ini → suspicion TINGGI.                                |
 
-## Catatan OCR (PaddleOCR ditunda)
+## Catatan model vision (parse nota)
 
-Saat ini **PaddleOCR sengaja tidak dipasang** karena terlalu berat (unduhan
-> 1 GB, RAM >= 2 GB). `/health` menampilkan `"ocr_ready": false`.
-
-> **Catatan penting dengan DeepSeek:** DeepSeek adalah model **teks**, tidak
-> mendukung input gambar. Jadi vision fallback OCR tidak tersedia — `/ocr-assist`
-> akan mengembalikan hasil kosong + warning (best-effort, tetap 200). Untuk OCR
-> otomatis, pasang PaddleOCR (lihat di bawah), atau pakai model LLM yang
-> mendukung gambar dan set `LLM_SUPPORTS_VISION=true`. Pengisian form manual oleh
-> yayasan tetap jalan tanpa OCR.
-
-Kode sudah siap untuk PaddleOCR — engine dimuat **sekali** saat startup
-(FastAPI lifespan) bila paket tersedia. Untuk mengaktifkannya nanti:
-
-1. Uncomment `paddleocr` dan `paddlepaddle` di `requirements.txt`, lalu
-   `pip install -r requirements.txt`.
-2. Uncomment blok `apt-get install ... libgl1 libglib2.0-0 libgomp1` di
-   `Dockerfile` (dependency sistem OpenCV/Paddle).
-
-Tidak ada perubahan kode yang diperlukan: begitu PaddleOCR terpasang,
-`/ocr-assist` otomatis memakainya sebagai jalur utama dan vision fallback
-hanya dipakai bila PaddleOCR gagal/hasilnya kosong.
+Model utama (`deepseek-v4-pro` via Sumopod) **text-only** — terverifikasi:
+gateway membuang bagian gambar (prompt_tokens tidak bertambah) dan model
+menjawab tidak melihat gambar. Karena itu `/parse-nota` memakai model vision
+terpisah (`LLM_VISION_MODEL`, mis. `gpt-5-nano` di Sumopod yang sama — murah,
+±$0,002/nota). Request bergambar juga sengaja **tanpa** `temperature` dan
+`max_tokens` karena model reasoning (gpt-5-*) menolak temperature non-default
+dan bisa menghabiskan budget token untuk reasoning hingga JSON terpotong.
 
 ## Integrasi dengan backend Node.js (NexTrust)
 
@@ -449,18 +443,18 @@ const AI = axios.create({
   headers: { "X-Internal-Token": process.env.AI_INTERNAL_TOKEN },
 });
 
-// 1) OCR assist: kirim foto nota, terima saran isian untuk form
-async function ocrAssist(filePath, hintItems) {
+// 1) Parse nota: kirim foto nota, terima JSON item untuk form
+async function parseNota(filePath, hintItems) {
   const form = new FormData();
   form.append("file", fs.createReadStream(filePath));
   form.append("hint_items", JSON.stringify(hintItems));
-  const { data } = await AI.post("/api/v1/ocr-assist", form, { headers: form.getHeaders(AI.defaults.headers) });
-  // tampilkan data.suggested_items di form frontend untuk DIKOREKSI yayasan;
+  const { data } = await AI.post("/api/v1/parse-nota", form, { headers: form.getHeaders(AI.defaults.headers) });
+  // tampilkan data.items di form frontend untuk DIKONFIRMASI yayasan;
   // nilai null / confidence RENDAH wajib diisi manual
   return data;
 }
 
-// 2) Validasi milestone: kirim data TERKONFIRMASI yayasan (bukan OCR mentah)
+// 2) Validasi milestone: kirim data TERKONFIRMASI yayasan (bukan hasil baca mentah)
 async function validateMilestone(payload) {
   const { data } = await AI.post("/api/v1/validate-milestone", payload);
   switch (data.verdict) {
@@ -472,8 +466,8 @@ async function validateMilestone(payload) {
 }
 ```
 
-Jika LLM gagal/melenceng dari schema, endpoint validasi mengembalikan HTTP
-`502` `{"error": "llm_validation_failed", "detail": "..."}` — tangani sebagai
-kegagalan sementara (retry / tandai review manual), bukan penolakan kampanye.
-`/ocr-assist` tidak pernah 5xx untuk kegagalan OCR/LLM: ia mengembalikan 200
-dengan `suggested_items` kosong + `warnings`, karena sifatnya best-effort.
+Jika LLM gagal/melenceng dari schema, endpoint mengembalikan HTTP `502`
+(`llm_validation_failed` / `llm_planning_failed` / `llm_nota_failed`) — tangani
+sebagai kegagalan sementara (retry / tandai review manual), bukan penolakan.
+`/parse-nota` juga 502 bila gagal baca — JANGAN ditafsirkan sebagai "nota tidak
+valid"; biarkan yayasan mengisi form manual sebagai fallback.

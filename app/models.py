@@ -126,11 +126,11 @@ class EvaluateRABResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# OCR Assist
+# Parse Nota (vision LLM: foto nota -> JSON terstruktur)
 # ---------------------------------------------------------------------------
 
 
-class SuggestedItem(BaseModel):
+class NotaItem(BaseModel):
     name: str
     quantity: float | None = None
     unit_price: float | None = None
@@ -138,10 +138,9 @@ class SuggestedItem(BaseModel):
     confidence: Confidence
 
 
-class OcrAssistResponse(BaseModel):
-    source: Literal["paddleocr", "vision_fallback"]
+class ParseNotaResponse(BaseModel):
     raw_text: str
-    suggested_items: list[SuggestedItem] = Field(default_factory=list)
+    items: list[NotaItem] = Field(default_factory=list)
     detected_total: float | None = None
     warnings: list[str] = Field(default_factory=list)
 

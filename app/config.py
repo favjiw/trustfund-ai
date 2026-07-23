@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 60.0
     llm_max_tokens: int = 4096
     llm_supports_vision: bool = False  # DeepSeek text-only; set true bila model mendukung gambar
+    # Model vision terpisah untuk membaca gambar (parse nota). Bila diisi,
+    # dipakai HANYA saat request menyertakan gambar; model utama tetap untuk teks.
+    llm_vision_model: str = ""
+    # Endpoint & key khusus model vision (mis. Gemini via endpoint OpenAI-compatible).
+    # Kosong = pakai base_url/api_key utama.
+    llm_vision_base_url: str = ""
+    llm_vision_api_key: str = ""
     llm_max_retries: int = 2  # retry pada 429/5xx transient
     llm_retry_backoff_seconds: float = 0.5
 
@@ -27,11 +34,6 @@ class Settings(BaseSettings):
     inaproc_timeout_seconds: float = 20.0
     inaproc_per_page: int = 30
     inaproc_min_samples: int = 3  # butuh >= N produk agar benchmark dianggap valid
-
-    # OCR assist
-    ocr_vision_fallback: bool = True
-    ocr_lang: str = "latin"
-    ocr_min_text_len: int = 20
 
     # Validator bukti milestone: toleransi nominal (persen)
     diff_review_pct: float = 10.0

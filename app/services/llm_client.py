@@ -92,6 +92,9 @@ class LLMClient:
         timeout_seconds: float = 60.0,
         max_tokens: int = 4096,
         supports_vision: bool = False,
+        vision_model: str = "",
+        vision_base_url: str = "",
+        vision_api_key: str = "",
         max_retries: int = 2,
         retry_backoff_seconds: float = 0.5,
         client: httpx.Client | None = None,
@@ -101,33 +104,43 @@ class LLMClient:
         self._base_url = base_url.rstrip("/")
         self._max_tokens = max_tokens
         self._supports_vision = supports_vision
+        self._vision_model = vision_model.strip()
+        # Endpoint/key vision boleh berbeda provider (mis. Gemini); kosong = ikut utama.
+        self._vision_base_url = (vision_base_url.strip() or base_url).rstrip("/")
+        self._vision_api_key = vision_api_key.strip() or api_key
         self._max_retries = max_retries
         self._retry_backoff = retry_backoff_seconds
         self._client = client or httpx.Client(timeout=timeout_seconds)
 
-    def _post_once(self, payload: dict) -> httpx.Response:
+    def _post_once(self, payload: dict, base_url: str, api_key: str) -> httpx.Response:
         return self._client.post(
-            f"{self._base_url}/chat/completions",
+            f"{base_url}/chat/completions",
             headers={
-                "Authorization": f"Bearer {self._api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             json=payload,
         )
 
-    def _chat(self, messages: list[dict], temperature: float) -> str:
+    def _chat(self, messages: list[dict], temperature: float, use_vision: bool = False) -> str:
+        base_url = self._vision_base_url if use_vision else self._base_url
+        api_key = self._vision_api_key if use_vision else self._api_key
         payload = {
-            "model": self._model,
+            "model": (self._vision_model or self._model) if use_vision else self._model,
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": self._max_tokens,
             "response_format": {"type": "json_object"},
         }
+        # Model vision (mis. gpt-5-nano) menolak temperature != default dan bisa
+        # menghabiskan max_tokens untuk reasoning hingga JSON terpotong — kirim
+        # kedua parameter hanya untuk jalur teks.
+        if not use_vision:
+            payload["temperature"] = temperature
+            payload["max_tokens"] = self._max_tokens
 
         last_error: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
-                response = self._post_once(payload)
+                response = self._post_once(payload, base_url, api_key)
                 response.raise_for_status()
                 data = response.json()
                 break
@@ -168,16 +181,20 @@ class LLMClient:
         """Panggil LLM dan paksa output JSON sesuai `schema` (Pydantic).
 
         `image`: pasangan (bytes, mime_type) opsional untuk input multimodal
-        (dipakai vision fallback OCR). Hanya dikirim bila model mendukung vision.
+        (dipakai parse-nota). Diteruskan ke model vision (LLM_VISION_MODEL) bila
+        dikonfigurasi, atau ke model utama bila mendukung vision.
         """
         system_message = f"{system_instruction}\n\n{_schema_instruction(schema)}"
         messages: list[dict] = [{"role": "system", "content": system_message}]
 
+        use_vision = image is not None
         if image is not None:
-            if not self._supports_vision:
+            # Jalur vision: model/endpoint vision khusus, atau model utama bila mendukung.
+            if not self._vision_model and not self._supports_vision:
                 raise LLMClientError(
-                    f"Model '{self._model}' tidak mendukung input gambar "
-                    "(set LLM_SUPPORTS_VISION=true bila model mendukung)."
+                    f"Model '{self._model}' tidak mendukung input gambar. Set "
+                    "LLM_VISION_MODEL ke model vision (mis. gemini-2.5-flash) atau "
+                    "LLM_SUPPORTS_VISION=true bila model utama mendukung gambar."
                 )
             image_bytes, mime_type = image
             b64 = base64.b64encode(image_bytes).decode("ascii")
@@ -193,7 +210,7 @@ class LLMClient:
         else:
             messages.append({"role": "user", "content": prompt})
 
-        raw_text = self._chat(messages, temperature)
+        raw_text = self._chat(messages, temperature, use_vision=use_vision)
         if not raw_text or not raw_text.strip():
             raise LLMClientError("Respons LLM kosong")
 

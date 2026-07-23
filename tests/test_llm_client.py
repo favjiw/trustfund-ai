@@ -131,3 +131,64 @@ def test_vision_sends_image_url_when_supported():
     assert isinstance(content, list)
     assert any(part.get("type") == "image_url" for part in content)
     assert content[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+
+
+class _Simple(LLMValidationResult):
+    pass
+
+
+def _tiny_png() -> bytes:
+    import io
+
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), "white").save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def test_vision_model_dipakai_saat_ada_gambar():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        captured["url"] = str(request.url)
+        captured["auth"] = request.headers.get("authorization")
+        payload = {"overall_score": 80, "summary": "ok", "item_assessments": [], "flags": []}
+        return httpx.Response(200, json=_completion(json.dumps(payload)))
+
+    client = _client(
+        handler,
+        vision_model="gemini-2.5-flash",
+        vision_base_url="http://gemini.test/v1beta/openai",
+        vision_api_key="AIza-test",
+    )
+    client.generate_structured("sys", "prompt", _Simple, image=(_tiny_png(), "image/png"))
+
+    # Request gambar dialihkan ke endpoint + key + model vision.
+    assert captured["body"]["model"] == "gemini-2.5-flash"
+    assert captured["url"].startswith("http://gemini.test/v1beta/openai/")
+    assert captured["auth"] == "Bearer AIza-test"
+    # Model vision (mis. gpt-5-nano) menolak temperature/max_tokens non-default.
+    assert "temperature" not in captured["body"]
+    assert "max_tokens" not in captured["body"]
+
+
+def test_teks_tetap_pakai_model_utama_meski_vision_model_diisi():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        payload = {"overall_score": 80, "summary": "ok", "item_assessments": [], "flags": []}
+        return httpx.Response(200, json=_completion(json.dumps(payload)))
+
+    client = _client(handler, vision_model="gemini-2.5-flash", vision_base_url="http://gemini.test/v1")
+    client.assess_rab("sys", "prompt")
+
+    assert captured["body"]["model"] == "deepseek-v4-pro"
+
+
+def test_gambar_tanpa_vision_model_dan_tanpa_dukungan_gagal_jelas():
+    client = _client(lambda r: httpx.Response(200, json=_completion("{}")))
+    with pytest.raises(LLMClientError, match="LLM_VISION_MODEL"):
+        client.generate_structured("sys", "prompt", _Simple, image=(_tiny_png(), "image/png"))

@@ -13,7 +13,7 @@ from app.models import (
     ElaResponse,
     EvaluateRABRequest,
     EvaluateRABResponse,
-    OcrAssistResponse,
+    ParseNotaResponse,
     PlanMilestonesRequest,
     PlanMilestonesResponse,
     StructureCheckResult,
@@ -27,7 +27,7 @@ from app.services.benchmark import build_benchmark
 from app.services.forensic import InvalidForensicImageError, compute_ela
 from app.services.llm_client import LLMClient
 from app.services.milestone_validator import MilestoneValidationError, MilestoneValidator
-from app.services.ocr_service import InvalidImageError, OcrService
+from app.services.nota_parser import InvalidImageError, NotaParseError, NotaParser
 from app.services.planner import MilestonePlanner, PlannerError
 from app.services.structure_guard import check_structure
 from app.services.validator import RABValidationError, RABValidator
@@ -64,23 +64,24 @@ async def lifespan(app: FastAPI):
         timeout_seconds=settings.llm_timeout_seconds,
         max_tokens=settings.llm_max_tokens,
         supports_vision=settings.llm_supports_vision,
+        vision_model=settings.llm_vision_model,
+        vision_base_url=settings.llm_vision_base_url,
+        vision_api_key=settings.llm_vision_api_key,
         max_retries=settings.llm_max_retries,
         retry_backoff_seconds=settings.llm_retry_backoff_seconds,
     )
     benchmark = build_benchmark(settings)
     validator = RABValidator(llm_client=llm_client, benchmark=benchmark)
 
-    ocr_service = OcrService(settings=settings, llm_client=llm_client)
-    ocr_service.load()  # muat model PaddleOCR sekali di sini, bukan per-request
-
     milestone_validator = MilestoneValidator(llm_client=llm_client, settings=settings)
     planner = MilestonePlanner(llm_client=llm_client, settings=settings)
+    nota_parser = NotaParser(llm_client=llm_client)
 
     app.state.settings = settings
     app.state.validator = validator
-    app.state.ocr_service = ocr_service
     app.state.milestone_validator = milestone_validator
     app.state.planner = planner
+    app.state.nota_parser = nota_parser
 
     yield
 
@@ -89,9 +90,10 @@ app = FastAPI(
     root_path="/trustfund-ai",
     title="TrustFund AI - RAB Validator",
     description=(
-        "Microservice AI untuk memvalidasi kewajaran RAB, OCR assist nota, dan "
-        "validasi bukti milestone kampanye donasi TrustFund. Endpoint ini bersifat "
-        "internal, hanya untuk dipanggil oleh backend Node.js."
+        "Microservice AI untuk memvalidasi kewajaran RAB, menyusun draf milestone "
+        "(AI Planner), membaca nota (vision LLM), dan memvalidasi bukti milestone "
+        "kampanye donasi TrustFund. Endpoint ini bersifat internal, hanya untuk "
+        "dipanggil oleh backend Node.js."
     ),
     version="2.0.0",
     lifespan=lifespan,
@@ -145,6 +147,15 @@ async def planner_error_handler(request: Request, exc: PlannerError):
     )
 
 
+@app.exception_handler(NotaParseError)
+async def nota_parse_error_handler(request: Request, exc: NotaParseError):
+    logger.error("Nota parsing failed: %s", exc)
+    return JSONResponse(
+        status_code=502,
+        content={"error": "llm_nota_failed", "detail": "Pembacaan nota gagal sementara. Silakan coba lagi."},
+    )
+
+
 @app.exception_handler(MilestoneValidationError)
 async def milestone_validation_error_handler(request: Request, exc: MilestoneValidationError):
     logger.error("Milestone validation failed: %s", exc)
@@ -157,13 +168,13 @@ async def milestone_validation_error_handler(request: Request, exc: MilestoneVal
 @app.get("/health")
 async def health(request: Request):
     settings = request.app.state.settings
-    ocr_service: OcrService = request.app.state.ocr_service
     return {
         "status": "ok",
         "model": settings.llm_model,
+        "vision_model": settings.llm_vision_model or (settings.llm_model if settings.llm_supports_vision else None),
+        "vision_ready": bool(settings.llm_vision_model.strip()) or settings.llm_supports_vision,
         "benchmark_enabled": settings.inaproc_enabled,
         "benchmark_source": "INAPROC" if settings.inaproc_enabled else None,
-        "ocr_ready": ocr_service.ocr_ready,
     }
 
 
@@ -208,14 +219,17 @@ async def _image_from_json(request: Request) -> tuple[bytes, dict]:
         raise HTTPException(status_code=400, detail="'image_base64' bukan base64 yang valid")
 
 
-@app.post("/api/v1/ocr-assist", response_model=OcrAssistResponse)
-async def ocr_assist(
+@app.post("/api/v1/parse-nota", response_model=ParseNotaResponse)
+async def parse_nota(
     request: Request,
     file: UploadFile | None = File(default=None, description="Foto nota (JPEG/PNG)"),
     hint_items: str | None = Form(default=None, description="Opsional: JSON array atau CSV nama item RAB terkait"),
 ):
-    """Terima foto nota via upload file (multipart) ATAU JSON {image_base64}."""
-    ocr_service: OcrService = request.app.state.ocr_service
+    """Foto nota -> JSON item terstruktur via vision LLM. Terima upload file
+    (multipart) ATAU JSON {image_base64}. Alur: hasil parse dikoreksi/dikonfirmasi
+    yayasan, lalu backend mengirimnya sebagai confirmed_items ke
+    /api/v1/validate-milestone (DeepSeek) untuk dicocokkan dengan RAB terkunci."""
+    nota_parser: NotaParser = request.app.state.nota_parser
 
     if file is not None:
         image_bytes = await file.read()
@@ -225,7 +239,7 @@ async def ocr_assist(
         hints = [str(h) for h in (body.get("hint_items") or [])]
 
     try:
-        return ocr_service.assist(image_bytes, hints)
+        return nota_parser.parse(image_bytes, hints)
     except InvalidImageError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
