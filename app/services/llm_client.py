@@ -210,19 +210,42 @@ class LLMClient:
         else:
             messages.append({"role": "user", "content": prompt})
 
-        raw_text = self._chat(messages, temperature, use_vision=use_vision)
-        if not raw_text or not raw_text.strip():
-            raise LLMClientError("Respons LLM kosong")
+        # Dua percobaan: bila output pertama melenceh dari schema (model kecil
+        # kadang menukar enum/format), kirim balik pesan error agar model
+        # mengoreksi jawabannya sendiri.
+        last_error = ""
+        for attempt in range(2):
+            raw_text = self._chat(messages, temperature, use_vision=use_vision)
+            if not raw_text or not raw_text.strip():
+                raise LLMClientError("Respons LLM kosong")
 
-        try:
-            parsed = json.loads(_extract_json(raw_text))
-        except json.JSONDecodeError as exc:
-            raise LLMClientError(f"Respons LLM bukan JSON valid: {exc}") from exc
+            try:
+                parsed = json.loads(_extract_json(raw_text))
+            except json.JSONDecodeError as exc:
+                last_error = f"Respons LLM bukan JSON valid: {exc}"
+            else:
+                try:
+                    return schema.model_validate(parsed)
+                except ValidationError as exc:
+                    last_error = f"Respons LLM tidak sesuai schema: {exc}"
 
-        try:
-            return schema.model_validate(parsed)
-        except ValidationError as exc:
-            raise LLMClientError(f"Respons LLM tidak sesuai schema: {exc}") from exc
+            if attempt == 0:
+                logger.warning("Output LLM melenceh dari schema, retry dengan feedback: %s", last_error[:300])
+                messages.append({"role": "assistant", "content": raw_text})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "Jawabanmu tidak valid terhadap JSON schema yang diminta. "
+                            f"Detail error:\n{last_error[:1500]}\n\n"
+                            "Kirim ulang SATU objek JSON yang benar sesuai schema, "
+                            "tanpa teks lain. Perhatikan nilai enum yang diizinkan "
+                            "pada tiap field."
+                        ),
+                    }
+                )
+
+        raise LLMClientError(last_error)
 
     def assess_rab(self, system_instruction: str, prompt: str) -> LLMValidationResult:
         return self.generate_structured(system_instruction, prompt, LLMValidationResult)

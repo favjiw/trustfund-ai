@@ -192,3 +192,37 @@ def test_gambar_tanpa_vision_model_dan_tanpa_dukungan_gagal_jelas():
     client = _client(lambda r: httpx.Response(200, json=_completion("{}")))
     with pytest.raises(LLMClientError, match="LLM_VISION_MODEL"):
         client.generate_structured("sys", "prompt", _Simple, image=(_tiny_png(), "image/png"))
+
+
+def test_schema_melenceng_diretry_dengan_feedback_lalu_sukses():
+    bad = json.dumps({"overall_score": 90, "summary": "ok", "item_assessments": [
+        {"id": "i1", "fairness": "RENDAH", "reason": "x", "confidence": "TINGGI"}
+    ], "flags": []})
+    good = json.dumps({"overall_score": 90, "summary": "ok", "item_assessments": [
+        {"id": "i1", "fairness": "WAJAR", "reason": "x", "confidence": "TINGGI"}
+    ], "flags": []})
+    responses = [bad, good]
+    captured_bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_bodies.append(json.loads(request.content))
+        return httpx.Response(200, json=_completion(responses.pop(0)))
+
+    client = _client(handler)
+    result = client.assess_rab("sys", "prompt")
+
+    assert result.item_assessments[0].fairness.value == "WAJAR"
+    # Percobaan kedua membawa jawaban salah + feedback error sebagai konteks.
+    retry_messages = captured_bodies[1]["messages"]
+    assert retry_messages[-2]["role"] == "assistant"
+    assert "tidak valid" in retry_messages[-1]["content"]
+
+
+def test_schema_melenceng_dua_kali_gagal():
+    bad = json.dumps({"overall_score": 90, "summary": "ok", "item_assessments": [
+        {"id": "i1", "fairness": "RENDAH", "reason": "x", "confidence": "TINGGI"}
+    ], "flags": []})
+    client = _client(lambda r: httpx.Response(200, json=_completion(bad)))
+
+    with pytest.raises(LLMClientError, match="schema"):
+        client.assess_rab("sys", "prompt")
